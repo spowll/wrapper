@@ -111,6 +111,8 @@ class CRendererSDK {
 	private outlineAlpha = 255
 	private mainColorLoops = 1
 
+
+
 	public get IsInDraw(): boolean {
 		return this.inDraw
 	}
@@ -487,6 +489,13 @@ class CRendererSDK {
 	public GetImageSize(path: string): Vector2 {
 		return this.tex2size.get(this.GetTexture(path)) ?? new Vector2(1, 1)
 	}
+
+	public SetOutlineMode(mode: number, alpha: number = 255, loops: number = 5) {
+		this.outlineMode = mode
+		this.outlineAlpha = alpha
+		this.mainColorLoops = loops
+	}
+
 	public Text(
 		text: string,
 		vecPos = new Vector2(),
