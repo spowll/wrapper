@@ -70,7 +70,7 @@ class Font {
 		public readonly FontID: number,
 		public readonly Weight: number,
 		public readonly Italic: boolean
-	) {}
+	) { }
 }
 
 class CRendererSDK {
@@ -106,6 +106,10 @@ class CRendererSDK {
 	private readonly tex2size = new Map</* textureID */ number, Vector2>()
 	private readonly queuedFonts: [string, string, number, boolean, string][] = []
 	private inDraw = false
+
+	private outlineMode = 0
+	private outlineAlpha = 255
+	private mainColorLoops = 1
 
 	public get IsInDraw(): boolean {
 		return this.inDraw
@@ -484,6 +488,77 @@ class CRendererSDK {
 		return this.tex2size.get(this.GetTexture(path)) ?? new Vector2(1, 1)
 	}
 	public Text(
+		text: string,
+		vecPos = new Vector2(),
+		color = Color.White,
+		fontName = this.DefaultFontName,
+		fontSize = this.DefaultTextSize,
+		weight = 400,
+		italic = false,
+		outlined = true
+	): void {
+		vecPos.RoundForThis()
+
+		if (outlined) {
+			let i = 0
+
+			switch (this.outlineMode) {
+				case 0:
+					i = 8
+					break
+				case 1:
+					i = 9
+					break
+				case 2:
+					i = 0
+					break
+			}
+
+			for (; i < 9; i++) {
+				this.TextInternal(
+					text,
+					vecPos
+						.Clone()
+						.AddScalarX(Math.floor(i / 3) - 1)
+						.AddScalarY(Math.floor(i % 3) - 1), //useless math floor
+					Color.Black.Clone().SetA(this.outlineAlpha),
+					fontName,
+					fontSize,
+					weight,
+					italic,
+					false
+				)
+			}
+
+			if (this.outlineMode === 1) {
+				this.TextInternal(
+					text,
+					vecPos,
+					Color.Black.Clone().SetA(this.outlineAlpha),
+					fontName,
+					fontSize,
+					700,
+					italic,
+					false
+				)
+			}
+		}
+
+		for (let i = 0; i < this.mainColorLoops; i++) {
+			this.TextInternal(
+				text,
+				vecPos,
+				color,
+				fontName,
+				fontSize,
+				weight,
+				italic,
+				false
+			)
+		}
+	}
+
+	public TextInternal(
 		text: string,
 		vecPos = new Vector2(),
 		color = Color.White,
