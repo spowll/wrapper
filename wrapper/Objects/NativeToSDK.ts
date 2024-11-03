@@ -1,17 +1,17 @@
 import { EntityPropertyType } from "../Base/EntityProperties"
 import { Events } from "../Managers/Events"
+import { Modifier } from "../Objects/Base/Modifier"
 import { ParseProtobufDesc, ParseProtobufNamed } from "../Utils/Protobuf"
 import { MapToObject } from "../Utils/Utils"
 import { Entity } from "./Base/Entity"
-import { Modifier } from "./Base/Modifier"
 
 const constructors = new Map<string, Constructor<Entity>>()
 const excludedErrorClassNames = new Set<string>(["CDeferredLightBase"])
 
 export type FieldHandler = (entity: Entity, newValue: EntityPropertyType) => any
 export const SDKClasses: [Constructor<Entity>, Entity[]][] = []
-export const ModifierSDKClass = new Map<string, Constructor<Modifier>>()
 export const ClassToEntities = new WeakMap<Constructor<any>, Entity[]>()
+export const ModifierSDKClass = new Map<string, Constructor<Modifier>>()
 export const ClassToEntitiesAr = new WeakMap<Constructor<any>, Entity[][]>()
 export const CachedFieldHandlers = new WeakMap<
 	Constructor<Entity>,
@@ -19,15 +19,15 @@ export const CachedFieldHandlers = new WeakMap<
 >()
 export const FieldHandlers = new Map<Constructor<Entity>, Map<string, FieldHandler>>()
 
-export function RegisterClassModifier(name: string, constructor: Constructor<Modifier>) {
-	ModifierSDKClass.set(name, constructor)
-}
-
 export function RegisterClass(name: string, constructor: Constructor<Entity>) {
 	constructors.set(name, constructor)
 	if (!FieldHandlers.has(constructor)) {
 		RegisterClassInternal(constructor)
 	}
+}
+
+export function RegisterClassModifier(name: string, constructor: Constructor<Modifier>) {
+	ModifierSDKClass.set(name, constructor)
 }
 
 export function RegisterFieldHandler<T extends Entity>(

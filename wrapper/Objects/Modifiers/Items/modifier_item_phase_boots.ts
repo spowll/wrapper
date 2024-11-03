@@ -1,19 +1,28 @@
+import { CModifierParams } from "../../../Base/CModifierParams"
 import { WrapperClassModifier } from "../../../Decorators"
+import { EModifierfunction } from "../../../Enums/EModifierfunction"
 import { Modifier } from "../../Base/Modifier"
 
 @WrapperClassModifier()
 export class modifier_item_phase_boots extends Modifier {
-	public readonly IsBoots = true
-	public readonly BonusArmorStack = true
+	public readonly DeclaredFunction = new Map([
+		[
+			EModifierfunction.MODIFIER_PROPERTY_MOVESPEED_BONUS_UNIQUE,
+			(_params?: CModifierParams) => this.cachedSpeed
+		]
+	])
 
-	protected SetBonusArmor(specialName = "bonus_armor", subtract = false): void {
-		super.SetBonusArmor(specialName, subtract)
+	private cachedSpeed = 0
+
+	protected AddModifier(): boolean {
+		this.UpdateValues()
+		return super.AddModifier()
 	}
 
-	protected SetBonusMoveSpeed(
-		specialName = "bonus_movement_speed",
-		subtract = false
-	): void {
-		super.SetBonusMoveSpeed(specialName, subtract)
+	protected UpdateValues() {
+		this.cachedSpeed = this.GetSpecialValue(
+			"bonus_movement_speed",
+			"item_phase_boots"
+		)
 	}
 }

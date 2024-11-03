@@ -133,7 +133,7 @@ export class CGameRules extends Entity {
 		)
 	}
 	public get IsNightGameTime(): boolean {
-		return !this.IsDayGameTime || (this.GameTime / 60 / 5) % 2 >= 1
+		return !this.IsDayGameTime // || (this.GameTime / 60 / 5) % 2 >= 1
 	}
 	public get IsNight(): boolean {
 		return (

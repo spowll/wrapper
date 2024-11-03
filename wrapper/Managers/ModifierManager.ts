@@ -1,8 +1,7 @@
 import { Vector4 } from "../Base/Vector4"
 import { DOTA_MODIFIER_ENTRY_TYPE } from "../Enums/DOTA_MODIFIER_ENTRY_TYPE"
-import { Ability } from "../Objects/Base/Ability"
 import { Modifier } from "../Objects/Base/Modifier"
-import { Unit } from "../Objects/Base/Unit"
+import { AbilityData } from "../Objects/DataBook/AbilityData"
 import { ModifierSDKClass } from "../Objects/NativeToSDK"
 import { GameState } from "../Utils/GameState"
 import {
@@ -14,73 +13,26 @@ import { QueueEvent } from "./EventsQueue"
 import { EventsSDK } from "./EventsSDK"
 import { StringTables } from "./StringTables"
 
-const queuedEnts: (Unit | Ability)[] = []
-const cooldownChanged = new Set<Ability>()
-
 const activeModifiers = new Map<number, Modifier>()
 const activeModifiersRaw = new Map<number, IModifier>()
 
-export const ModifierManager = new (class CModifierManager {
-	public readonly TemporaryUpdate: Modifier[] = []
-	public readonly PermanentUpdate: Modifier[] = []
-
-	public get AllModifiers() {
-		return [...activeModifiers.values()]
-	}
-
-	public GetModifierByIndex(index: number): Nullable<Modifier> {
-		return activeModifiers.get(index)
-	}
-
-	public PostDataUpdate() {
-		const temporary = this.TemporaryUpdate
-		for (let index = temporary.length - 1; index > -1; index--) {
-			const mod = temporary[index]
-			const owner = mod.Parent
-			const isValid = mod.IsValid && owner !== undefined
-			const hasBuff = owner?.HasBuffByName(mod.Name) ?? false
-			if (!isValid || GameState.RawGameTime >= mod.DieTime || !hasBuff) {
-				this.TemporaryUpdate.remove(mod)
-				continue
-			}
-			mod.OnIntervalThink()
-		}
-
-		const permanent = this.PermanentUpdate
-		for (let index = permanent.length - 1; index > -1; index--) {
-			const mod = permanent[index]
-			const owner = mod.Parent
-			const isValid = mod.IsValid && owner !== undefined
-			const hasBuff = owner?.HasBuffByName(mod.Name) ?? false
-			if (!isValid || !hasBuff) {
-				this.TemporaryUpdate.remove(mod)
-				continue
-			}
-			mod.OnIntervalThink()
-		}
-	}
-
-	public AddIntervalThinkTemporary(mod: Modifier) {
-		if (mod.Duration === 0) {
-			return
-		}
-		if (!this.TemporaryUpdate.includes(mod)) {
-			this.TemporaryUpdate.push(mod)
-		}
-	}
-
-	public AddIntervalThink(mod: Modifier) {
-		if (!this.PermanentUpdate.includes(mod)) {
-			this.PermanentUpdate.push(mod)
-		}
-	}
-})()
-
 export class IModifier {
+	public readonly InternalName: string
+	public readonly InternalDDAbilityName: string = "ability_base"
+
 	constructor(public readonly kv: RecursiveProtobuf) {
 		if (!this.kv.has("creation_time")) {
 			this.kv.set("creation_time", GameState.RawGameTime)
 		}
+		if (this.DDModifierID !== undefined) {
+			const ddName = AbilityData.GetAbilityNameByID(this.DDModifierID)
+			this.InternalDDAbilityName = ddName ?? "ability_base"
+		}
+		let name = ""
+		if (this.LuaName === undefined || this.LuaName === "") {
+			name = StringTables.GetString("ModifierNames", this.ModifierClass as number)
+		}
+		this.InternalName = name
 	}
 	public get EntryType() {
 		return this.GetProperty<DOTA_MODIFIER_ENTRY_TYPE>("entry_type")
@@ -216,7 +168,6 @@ export class IModifier {
 		}
 		return new Vector4(vec.get("x"), vec.get("y"), vec.get("z"), vec.get("w"))
 	}
-
 	private isValid<T>(value: T) {
 		return value !== 16777215
 	}
@@ -225,150 +176,27 @@ export class IModifier {
 function EmitModifierCreated(modKV: IModifier) {
 	if (
 		modKV.Index === undefined ||
-		modKV.SerialNum === undefined ||
-		modKV.Parent === undefined
+		modKV.Parent === undefined ||
+		modKV.SerialNum === undefined
 	) {
 		return
 	}
-
-	const luaName = modKV.LuaName
-	const Name =
-		luaName === undefined || luaName === ""
-			? StringTables.GetString("ModifierNames", modKV.ModifierClass as number)
-			: luaName
-
-	const instance = ModifierSDKClass.get(Name) ?? Modifier
-	const mod = new instance(modKV)
+	const mod = new (ModifierSDKClass.get(modKV.InternalName) ?? Modifier)(modKV)
 	activeModifiers.set(mod.SerialNumber, mod)
 	mod.Update()
 }
 
-function EmitModifierChanged(oldMod: Modifier, mod: IModifier) {
-	oldMod.kv = mod
+function EmitModifierChanged(oldMod: Modifier, newMod: IModifier) {
+	oldMod.kv = newMod
 	oldMod.Update()
 }
 
 function EmitModifierRemoved(mod: Nullable<Modifier>) {
 	if (mod !== undefined) {
 		activeModifiers.delete(mod.SerialNumber)
-		ModifierManager.TemporaryUpdate.remove(mod)
-		ModifierManager.PermanentUpdate.remove(mod)
 		mod.Remove()
 	}
 }
-
-EventsSDK.on("PreEntityCreated", ent => {
-	if (ent instanceof Unit || ent instanceof Ability) {
-		queuedEnts.push(ent)
-	}
-})
-
-EventsSDK.on("AbilityCooldownChanged", abil => {
-	if (!cooldownChanged.has(abil) && abil.Cooldown !== 0) {
-		cooldownChanged.add(abil)
-	}
-})
-
-EventsSDK.on("AbilityLevelChanged", abil => {
-	const owner = abil.Owner
-	if (owner === undefined) {
-		return
-	}
-	activeModifiers.forEach(mod => {
-		if (mod.Ability !== undefined && owner === mod.Ability.Owner) {
-			mod.OnAbilityLevelChanged()
-		}
-	})
-})
-
-EventsSDK.on("UnitLevelChanged", unit => {
-	activeModifiers.forEach(mod => {
-		if (unit === mod.Ability?.Owner || unit === mod.Parent || unit === mod.Caster) {
-			mod.OnUnitLevelChanged()
-		}
-	})
-})
-
-EventsSDK.on("HasShardChanged", unit => {
-	activeModifiers.forEach(mod => {
-		if (mod.Ability !== undefined && unit === mod.Ability.Owner) {
-			mod.OnShardChanged()
-		}
-	})
-})
-
-EventsSDK.on("HasScepterChanged", unit => {
-	activeModifiers.forEach(mod => {
-		if (mod.Ability !== undefined && unit === mod.Ability.Owner) {
-			mod.OnScepterChanged()
-		}
-	})
-})
-
-EventsSDK.on("EntityDestroyed", ent => {
-	if (ent instanceof Unit || ent instanceof Ability) {
-		if (ent instanceof Ability) {
-			cooldownChanged.delete(ent)
-		}
-		queuedEnts.remove(ent)
-	}
-})
-
-EventsSDK.on("PostDataUpdate", () => {
-	if (queuedEnts.length !== 0) {
-		for (let index = 0; index < queuedEnts.length; index++) {
-			const ent = queuedEnts[index]
-			if (ent instanceof Ability) {
-				activeModifiers.forEach(mod => {
-					if (ent.HandleMatches(mod.kv.Ability ?? 0)) {
-						mod.Update()
-					}
-				})
-			}
-			if (ent instanceof Unit) {
-				activeModifiers.forEach(mod => {
-					if (
-						ent.HandleMatches(mod.kv.Parent ?? 0) ||
-						ent.HandleMatches(mod.kv.Caster ?? 0) ||
-						ent.HandleMatches(mod.kv.AuraOwner ?? 0) ||
-						ent.HandleMatches(mod.kv.CustomEntity ?? 0)
-					) {
-						mod.Update()
-					}
-				})
-			}
-		}
-		queuedEnts.clear()
-	}
-
-	if (cooldownChanged.size !== 0) {
-		activeModifiers.forEach(mod => {
-			if (mod.Ability === undefined || !cooldownChanged.has(mod.Ability)) {
-				return
-			}
-			// see: modifier_item_tranquil_boots
-			if (mod.Ability.Cooldown === 0) {
-				cooldownChanged.delete(mod.Ability)
-			}
-			mod.OnAbilityCooldownChanged()
-		})
-	}
-
-	ModifierManager.PostDataUpdate()
-})
-
-EventsSDK.on("EntityDestroyed", ent => {
-	activeModifiers.forEach(mod => {
-		if (
-			mod.Parent === ent ||
-			mod.Ability === ent ||
-			mod.Caster === ent ||
-			mod.AuraOwner === ent
-		) {
-			mod.Update()
-		}
-	})
-})
 
 ParseProtobufDesc(`
 enum DOTA_MODIFIER_ENTRY_TYPE {
@@ -422,7 +250,7 @@ EventsSDK.on("UpdateStringTable", (name, update) => {
 	if (name !== "ActiveModifiers") {
 		return
 	}
-	QueueEvent(() =>
+	QueueEvent(() => {
 		update.forEach(([, modSerialized], key) => {
 			const replaced = activeModifiersRaw.get(key)
 			if (modSerialized.byteLength === 0 && replaced?.SerialNum !== undefined) {
@@ -456,16 +284,19 @@ EventsSDK.on("UpdateStringTable", (name, update) => {
 					break
 			}
 		})
-	)
+	})
 })
 
 EventsSDK.on("RemoveAllStringTables", () => {
 	activeModifiers.forEach(mod => EmitModifierRemoved(mod))
 	activeModifiersRaw.clear()
-
 	// just in case
 	QueueEvent(() => {
 		activeModifiers.forEach(mod => EmitModifierRemoved(mod))
 		activeModifiersRaw.clear()
 	})
 })
+
+export const gModifierManager = new (class CModifierManager {
+	// TODO: implement
+})()

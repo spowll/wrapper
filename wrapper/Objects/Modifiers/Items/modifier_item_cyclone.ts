@@ -4,10 +4,10 @@ import { EModifierfunction } from "../../../Enums/EModifierfunction"
 import { Modifier } from "../../Base/Modifier"
 
 @WrapperClassModifier()
-export class modifier_smoke_of_deceit extends Modifier {
+export class modifier_item_cyclone extends Modifier {
 	public readonly DeclaredFunction = new Map([
 		[
-			EModifierfunction.MODIFIER_PROPERTY_MOVESPEED_BONUS_PERCENTAGE,
+			EModifierfunction.MODIFIER_PROPERTY_MOVESPEED_BONUS_CONSTANT,
 			(_params?: CModifierParams) => this.cachedSpeed
 		]
 	])
@@ -20,9 +20,6 @@ export class modifier_smoke_of_deceit extends Modifier {
 	}
 
 	protected UpdateValues() {
-		this.cachedSpeed = this.GetSpecialValue(
-			"bonus_movement_speed",
-			"item_smoke_of_deceit"
-		)
+		this.cachedSpeed = this.GetSpecialValue("bonus_movement_speed", "item_cyclone")
 	}
 }
