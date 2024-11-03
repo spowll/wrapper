@@ -28,6 +28,7 @@ export class Ability extends Entity {
 	public readonly AbilityData: AbilityData
 	@NetworkedBasicField("m_bInIndefiniteCooldown")
 	public IsInIndefiniteCooldown = false
+	/** @deprecated TODO: remove */
 	@NetworkedBasicField("m_nMaxLevelOverride")
 	public MaxLevelOverride = -1
 	@NetworkedBasicField("m_bActivated")
@@ -44,6 +45,7 @@ export class Ability extends Entity {
 	public IsStolen = false
 	@NetworkedBasicField("m_iManaCost")
 	public NetworkedManaCost = 0
+	/** @deprecated TODO: remove */
 	@NetworkedBasicField("m_flOverrideCastPoint")
 	public OverrideCastPoint = -1
 	@NetworkedBasicField("m_flCooldownLength")
@@ -351,7 +353,7 @@ export class Ability extends Entity {
 		return this.Owner?.BonusCastRange ?? 0
 	}
 	public get CastPointAmplifier(): number {
-		return this.Owner?.BonusCastPointAmplifier ?? 1
+		return 1
 	}
 	public get ManaCostAmplifier(): number {
 		return this.Owner?.BonusManaCostAmplifier ?? 1

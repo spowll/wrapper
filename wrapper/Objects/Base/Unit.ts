@@ -16,6 +16,7 @@ import { DOTAUnitAttackCapability } from "../../Enums/DOTAUnitAttackCapability"
 import { DOTAUnitMoveCapability } from "../../Enums/DOTAUnitMoveCapability"
 import { dotaunitorder_t } from "../../Enums/dotaunitorder_t"
 import { EAbilitySlot } from "../../Enums/EAbilitySlot"
+import { EModifierfunction } from "../../Enums/EModifierfunction"
 import { GameActivity } from "../../Enums/GameActivity"
 import { GridNavCellFlags } from "../../Enums/GridNavCellFlags"
 import { modifierstate } from "../../Enums/modifierstate"
@@ -26,7 +27,6 @@ import { EntityManager } from "../../Managers/EntityManager"
 import { EventsSDK } from "../../Managers/EventsSDK"
 import { ExecuteOrder } from "../../Native/ExecuteOrder"
 import { RendererSDK } from "../../Native/RendererSDK"
-import { HeightMap } from "../../Native/WASM"
 import { RegisterFieldHandler } from "../../Objects/NativeToSDK"
 import { GridNav } from "../../Resources/ParseGNV"
 import { GameState } from "../../Utils/GameState"
@@ -35,6 +35,8 @@ import { QuantizePlaybackRate } from "../../Utils/QuantizeUtils"
 import { Inventory } from "../DataBook/Inventory"
 import { PlayerCustomData } from "../DataBook/PlayerCustomData"
 import { UnitData } from "../DataBook/UnitData"
+import { UnitModifierManager } from "../DataBook/UnitModifierManager"
+import { UnitMoveSpeedManager } from "../DataBook/UnitMoveSpeedManager"
 import { Ability } from "./Ability"
 import { Entity, GameRules, LocalPlayer } from "./Entity"
 import { Item } from "./Item"
@@ -51,12 +53,6 @@ const MAX_SPELLS = 31
 
 function UnitNameChanged(unit: Unit) {
 	unit.UnitData = UnitData.globalStorage.get(unit.Name) ?? UnitData.empty
-}
-
-function UpdateModifiersByUnitState(unit: Unit) {
-	for (let i = unit.Buffs.length - 1; i > -1; i--) {
-		unit.Buffs[i].OnUnitStateChaged()
-	}
 }
 
 @WrapperClass("CDOTA_BaseNPC")
@@ -127,8 +123,6 @@ export class Unit extends Entity {
 	public readonly IsSummoned: boolean = false
 	@NetworkedBasicField("m_flLastAttackTime")
 	public readonly LastAttackTime: number = 0
-	@NetworkedBasicField("m_flLastDamageTime")
-	public readonly LastDamageTime: number = 0
 	@NetworkedBasicField("m_flLastDealtDamageTime")
 	public readonly LastDealtDamageTime: number = 0
 	@NetworkedBasicField("m_iMoveSpeed")
@@ -167,6 +161,8 @@ export class Unit extends Entity {
 	@NetworkedBasicField("m_nResetEventsParity")
 	public SequenceParity: number = 0
 	public SequenceParityPrev: number = 0
+	@NetworkedBasicField("m_nUnitState64", EPropertyType.UINT64)
+	public readonly UnitStateNetworked: bigint = 0n
 
 	public Parity: number = 0
 	public Level: number = 0
@@ -177,8 +173,8 @@ export class Unit extends Entity {
 	public BaseTotalIntellect: number = 0
 	public TotalStrength: number = 0
 	public AttackCapabilities: number = 0
-	public UnitStateNetworked: bigint = 0n
 
+	/** @description NOTE: this is internal field, use Spawner */
 	public Spawner_: number = 0
 	public Spawner: Nullable<NeutralSpawner>
 	public LastActivity: GameActivity = 0 as GameActivity
@@ -228,32 +224,40 @@ export class Unit extends Entity {
 	public HasShardModifier: boolean = false
 	public CanBeHealed: boolean = true
 
+	/** @description NOTE: this is internal field use Name */
 	public UnitName_: string = ""
 	public PlayerID: number = -1
 	public OwnerPlayerID: number = -1
 	public HPRegenCounter: number = 0
 	public IsControllableByPlayerMask: bigint = 0n
 
+	/** @description NOTE: this is internal field use MyWearables */
 	public MyWearables_: number[] = []
 	public MyWearables: Wearable[] = []
 
-	/**
-	 * @description The owner of the Unit. (example: Spirit Bear)
-	 */
+	/** @description NOTE: this is internal field use OwnerNPC */
 	public OwnerNPC_: number = 0
+	/** @description The owner of the Unit. (example: Spirit Bear) */
 	public OwnerNPC: Nullable<Unit> = undefined
-
+	/** @description NOTE: this is internal field use Target */
 	public TargetIndex_: number = -1
+	/** @description NOTE: this is internal field use IsIllusion */
 	public IsIllusion_: boolean = false
-
+	/** @description NOTE: this is internal field use LastDamageTime */
+	public LastDamageTime_: number = 0
+	/** @description NOTE: this is internal field use IsClone */
 	public IsClone_: boolean = false
+	/** @description NOTE: this is internal field use IsStrongIllusion */
 	public IsStrongIllusion_: boolean = false
-
+	/** @description NOTE: this is internal field use IsVisibleForEnemies(...) */
 	public IsVisibleForEnemies_: boolean = false
 	public cellIsVisibleForEnemies_: boolean = false // TODO: calculate grid nav from enemies
 
+	/** @deprecated use Unit#Modifiers */
 	public readonly Buffs: Modifier[] = []
 	public readonly Inventory = new Inventory(this)
+	public readonly Modifiers = new UnitModifierManager()
+
 	public readonly Spells_ = new Array<number>(MAX_SPELLS).fill(0)
 	public readonly Spells = new Array<Nullable<Ability>>(MAX_SPELLS).fill(undefined)
 	public readonly TotalItems_ = new Array<number>(MAX_ITEMS).fill(0)
@@ -266,22 +270,27 @@ export class Unit extends Entity {
 	 */
 	public readonly FogVisiblePosition = new Vector3().Invalidate()
 
+	private readonly moveSpeedManager = new UnitMoveSpeedManager(this)
+
 	public get TotalIntellect() {
 		return !this.HasBuffByName("modifier_ogre_magi_dumb_luck")
 			? this.BaseTotalIntellect
 			: 0
 	}
+	public get LastDamageTime() {
+		return this.LastDamageTime_
+	}
 	public get Target() {
 		return EntityManager.EntityByIndex<Unit>(this.TargetIndex_)
 	}
 	public get DayVisionAmplify() {
-		return this.CalcualteAmpDayVision()
+		return 0 // this.CalcualteAmpDayVision()
 	}
 	public get BonusDayVision() {
-		return this.CalcualteBonusDayVision()
+		return 0 // this.CalcualteBonusDayVision()
 	}
 	public get BonusNightVision() {
-		return this.CalcualteBonusNightVision()
+		return 0 // this.CalcualteBonusNightVision()
 	}
 	public get DayVisionBonus() {
 		return this.NetworkedDayVision + this.BonusDayVision
@@ -300,7 +309,7 @@ export class Unit extends Entity {
 	}
 	// ===================================== Cast point ===================================== //
 	public get BonusCastPointAmplifier(): number {
-		return this.CalculateCastPointAmplifier()
+		return 0 // this.CalculateCastPointAmplifier()
 	}
 	// ===================================== Armor ===================================== //
 	public get BaseArmor(): number {
@@ -308,19 +317,19 @@ export class Unit extends Entity {
 	}
 
 	public get BaseFixedArmor(): number {
-		return this.CalculateBaseFixedArmor()
+		return 0 // this.CalculateBaseFixedArmor()
 	}
 
 	public get BaseBonusArmor(): number {
-		return this.CalculateBaseArmorBonus()
+		return 0 // this.CalculateBaseArmorBonus()
 	}
 
 	public get BaseBonusArmorAmplifier(): number {
-		return this.CalculateBaseBonusArmorAmplifier()
+		return 0 // this.CalculateBaseBonusArmorAmplifier()
 	}
 
 	public get BonusArmor(): number {
-		return this.CalculateArmorBonus()
+		return 0 // this.CalculateArmorBonus()
 	}
 
 	public get Armor() {
@@ -337,42 +346,40 @@ export class Unit extends Entity {
 		return this.UnitData.ProjectileSpeed
 	}
 	public get IsAttackSpeedLimit(): boolean {
-		return (
-			this.Buffs.find(buff => !buff.IsAttackSpeedLimit)?.IsAttackSpeedLimit ?? true
-		)
+		return false
 	}
 	public get BaseAttackTimeData(): number {
 		return this.UnitData.BaseAttackTime
 	}
 	public get BaseAttackSpeedData(): number {
-		return Math.max(this.UnitData.BaseAttackSpeed, AttackSpeedData.MinBase)
+		return this.UnitData.BaseAttackSpeed
 	}
 	public get BaseAttackAnimationPointData(): number {
 		return this.UnitData.AttackAnimationPoint
 	}
 	public get BaseAttackSpeed(): number {
-		return this.CalculateBaseAttackSpeed()
+		return 0 // this.CalculateBaseAttackSpeed()
 	}
 	public get BaseAttackSpeedBonus(): number {
-		return this.CalculateBaseAttackSpeedBonus()
+		return 0 // this.CalculateBaseAttackSpeedBonus()
 	}
 	public get BaseAttackSpeedAmplifier(): number {
-		return this.CalculateBaseAttackSpeedAmplifier()
+		return 0 // this.CalculateBaseAttackSpeedAmplifier()
 	}
 	public get BaseAttackTime(): number {
-		return this.CalculateBaseAttackTime()
+		return 0 // this.CalculateBaseAttackTime()
 	}
 	public get BaseAttackAnimationPoint(): number {
-		return this.CalculateBaseAttackAnimationPoint()
+		return 0 // this.CalculateBaseAttackAnimationPoint()
 	}
 	public get AttackAnimationPoint(): number {
-		return this.CalculateAttackAnimationPoint()
+		return 0 // this.CalculateAttackAnimationPoint()
 	}
 	public get AttackSpeedBonus(): number {
-		return this.CalculateAttackSpeedBonus()
+		return 0 // this.CalculateAttackSpeedBonus()
 	}
 	public get AttackSpeedAmplifier(): number {
-		return this.CalculateAttackSpeedAmplifier()
+		return 0 // this.CalculateAttackSpeedAmplifier()
 	}
 	public get AttacksPerSecond(): number {
 		return 1 / this.AttackRate
@@ -396,36 +403,39 @@ export class Unit extends Entity {
 	}
 	// ===================================== Move Speed ===================================== //
 	public get IsMoveSpeedLimit(): boolean {
-		return this.Buffs.find(buff => !buff.IsMoveSpeedLimit)?.IsMoveSpeedLimit ?? true
+		return false // this.Buffs.find(buff => !buff.IsMoveSpeedLimit)?.IsMoveSpeedLimit ?? true
 	}
 	public get MoveSpeedBaseData(): number {
 		return this.UnitData.BaseMovementSpeed
 	}
-	public get MoveSpeedBase(): number {
-		return this.CalcualteBaseMoveSpeed()
+	public get BaseMoveSpeed(): number {
+		const result = this.Modifiers.GetConstantLowestInternal(
+			EModifierfunction.MODIFIER_PROPERTY_MOVESPEED_BASE_OVERRIDE
+		)
+		if (result !== 0) {
+			return result
+		}
+		return this.NetworkBaseMoveSpeed
 	}
 	public get MoveSpeedFixed(): number {
-		return this.CalculateFixedMoveSpeed()
+		return 0 // this.CalculateFixedMoveSpeed()
 	}
 	public get MoveSpeedBonus(): number {
-		return this.CalculateBonusMoveSpeed()
+		return 0 //this.CalculateBonusMoveSpeed()
 	}
 	public get MoveSpeedResistance(): number {
-		return this.CalcualteResistanceMoveSpeed()
+		return 0 // this.CalcualteResistanceMoveSpeed()
 	}
 	public get MoveSpeedAmplifier(): number {
-		return this.CalculateMoveSpeedAmplifier()
+		return 0 // this.CalculateMoveSpeedAmplifier()
 	}
 	public get Speed(): number {
-		// TODO: use for modifiers
-		// const amp = this.MoveSpeedAmplifier
-		// const isLimit = this.IsMoveSpeedLimit
-		// const baseSpeed = this.MoveSpeedBase + this.MoveSpeedBonus
-		// const calculateSpeed = Math.max(baseSpeed * amp, MoveSpeedData.Min)
-		// const totalSpeed = isLimit
-		// 	? Math.min(MoveSpeedData.Max, Math.max(MoveSpeedData.Min, calculateSpeed))
-		// 	: Math.max(MoveSpeedData.Min, calculateSpeed)
-		return 0
+		const amp = this.MoveSpeedAmplifier
+		const baseSpeed = this.BaseMoveSpeed + this.MoveSpeedBonus
+		const calculateSpeed = Math.max(baseSpeed * amp, MoveSpeedData.Min)
+		return this.IsMoveSpeedLimit
+			? Math.min(MoveSpeedData.Max, Math.max(MoveSpeedData.Min, calculateSpeed))
+			: Math.max(MoveSpeedData.Min, calculateSpeed)
 	}
 	/** ============================== Turn Rate ======================================= */
 	public get BaseMovementTurnRateData(): number {
@@ -433,19 +443,19 @@ export class Unit extends Entity {
 	}
 
 	public get BaseTurnRate(): number {
-		return this.CalcualteBaseTurnRate()
+		return 0 // this.CalcualteBaseTurnRate()
 	}
 
 	public get TurnRateAmplifier(): number {
-		return this.CalcualteAmpTurnRate()
+		return 0 // this.CalcualteAmpTurnRate()
 	}
 
 	public get BonusMovementTurnRate(): number {
-		return this.CalcualteBonusTurnRate()
+		return 0 // this.CalcualteBonusTurnRate()
 	}
 
 	public get FixedMovementTurnRate(): number {
-		return this.CalcualteFixedTurnRate()
+		return 0 //this.CalcualteFixedTurnRate()
 	}
 
 	public get MovementTurnRate(): number {
@@ -575,9 +585,6 @@ export class Unit extends Entity {
 		return this.IsUnitStateFlagSet(modifierstate.MODIFIER_STATE_SPECIALLY_DENIABLE)
 	}
 	public get HasModifierVisibleForEnemies(): boolean {
-		for (let index = this.Buffs.length - 1; index > -1; index--) {
-			return this.Buffs[index].IsVisibleForEnemies
-		}
 		return false
 	}
 	public get HasNoHealthBar(): boolean {
@@ -618,22 +625,22 @@ export class Unit extends Entity {
 		return this.UnitData.ArmorType
 	}
 	public get IsInfinityAttackRange() {
-		return this.Buffs.some(x => x.IsInfinityAttackRange)
+		return false // this.Buffs.some(x => x.IsInfinityAttackRange)
 	}
 	public get BaseAttackRange(): number {
 		return this.UnitData.BaseAttackRange
 	}
 	public get BonusAttackRange(): number {
-		return this.CalcualteBonusAttackRange()
+		return 0 // this.CalcualteBonusAttackRange()
 	}
 	public get AttackRangeAmplifier(): number {
-		return this.CalcualteAmpAttackRange()
+		return 0 // this.CalcualteAmpAttackRange()
 	}
 	public get InfinityAttackRange(): number {
-		return this.CalcualteInfinityAttackRange()
+		return 0 // this.CalcualteInfinityAttackRange()
 	}
 	public get FixedAttackRange(): number {
-		return this.CalcualteFixedAttackRange()
+		return 0 // this.CalcualteFixedAttackRange()
 	}
 	public get AttackDamageAverage(): number {
 		return (this.AttackDamageMin + this.AttackDamageMax) / 2
@@ -699,9 +706,6 @@ export class Unit extends Entity {
 		return this.UnitStateMask.toMask
 	}
 	public get IsGhost(): boolean {
-		for (let index = this.Buffs.length - 1; index > -1; index--) {
-			return this.Buffs[index].IsGhost
-		}
 		return false
 	}
 	public get IsEthereal(): boolean {
@@ -749,23 +753,23 @@ export class Unit extends Entity {
 		return this.Spells.some(spell => spell !== undefined && spell.IsInAbilityPhase)
 	}
 	public get BonusCastRange(): number {
-		return this.CalcualteBonusCastRange()
+		return 0 // this.CalcualteBonusCastRange()
 	}
 	/** @deprecated */
 	public get CastRangeBonus(): number {
 		return this.BonusCastRange
 	}
 	public get CastRangeAmplifier(): number {
-		return this.CalcualteAmpCastRange()
+		return 0 // this.CalcualteAmpCastRange()
 	}
 	public get BonusAOERadius(): number {
-		return this.CalcualteBonusAOERadius()
+		return 0 // this.CalcualteBonusAOERadius()
 	}
 	public get BonusAOERadiusAmplifier(): number {
-		return this.CalcualteBonusAOERadiusAmplifier()
+		return 0 // this.CalcualteBonusAOERadiusAmplifier()
 	}
 	public get BonusManaCostAmplifier(): number {
-		return this.CalcualteBonusManaCostAmplifier()
+		return 0 // this.CalcualteBonusManaCostAmplifier()
 	}
 	public get BaseStatusResistance(): number {
 		// maybe valve add new future status resist
@@ -780,10 +784,10 @@ export class Unit extends Entity {
 		return (0.06 * armor) / (1 + 0.06 * Math.abs(armor))
 	}
 	public get StatusResistance(): number {
-		return this.CalculateStatusResist()
+		return 0
 	}
 	public get StatusResistanceAmplifier(): number {
-		return this.CalculateStatusResistAmplifier()
+		return 0
 	}
 	public get SpellAmplification(): number {
 		const itemsSpellAmp = this.Items.reduce(
@@ -818,7 +822,7 @@ export class Unit extends Entity {
 		)
 	}
 	public get IsShield(): boolean {
-		return this.Buffs.some(buff => buff.IsShield)
+		return false // this.Buffs.some(buff => buff.IsShield)
 	}
 	public get IsFlyingVisually(): boolean {
 		return this.Buffs.some(buff => buff.ShouldDoFlyHeightVisual)
@@ -854,31 +858,14 @@ export class Unit extends Entity {
 
 		return totalSpeed
 	}
-	protected get MoveSpeedBonusBoots(): number {
-		const sortBuffs = this.Buffs.toOrderBy(
-			// exclude 0 and boots
-			x => x.IsBoots && x.BonusMoveSpeed === 0,
-			// sort by max
-			x => -x.BonusMoveSpeed
-		)
-		const buff = sortBuffs.find(x => x.IsBoots && x.BonusMoveSpeed !== 0)
-		return buff?.BonusMoveSpeed ?? 0
-	}
-	protected get MoveSpeedAmpBoots(): number {
-		const sortBuffs = this.Buffs.toOrderBy(
-			// exclude 0 and boots
-			x => x.IsBoots && x.BonusMoveSpeedAmplifier === 0,
-			// sort by max
-			x => -x.BonusMoveSpeedAmplifier
-		)
-		const buff = sortBuffs.find(x => x.IsBoots && x.BonusMoveSpeedAmplifier !== 0)
-		return buff?.BonusMoveSpeedAmplifier ?? 0
-	}
 	/**
 	 * @description example: panorama/images/heroes/npc_dota_hero_windrunner_png.vtex_c
 	 */
 	public TexturePath(small?: boolean, team = this.Team): Nullable<string> {
 		return GetUnitTexture(this.Name, small, team)
+	}
+	public GetMoveSpeedModifier(_baseSpeed: number): number {
+		return 0
 	}
 	public GetNextAttackPoint(delay: number, nth = 0): number {
 		const baseAttackPoint = this.AttackPoint
@@ -1993,611 +1980,6 @@ export class Unit extends Entity {
 			isPlayerInput: false
 		})
 	}
-
-	/** ================================ Armor ======================================= */
-	public CalculateBaseFixedArmor() {
-		let totalFixed = 0
-		const buffs = this.Buffs
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BaseFixedArmor) {
-				continue
-			}
-			totalFixed += buff.BaseFixedArmor
-		}
-		return totalFixed
-	}
-	public CalculateBaseArmorBonus() {
-		let totalBonus = 0
-		const buffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BaseBonusArmor) {
-				continue
-			}
-			if (!buff.BaseBonusArmorStack && names.has(buff.Name)) {
-				continue
-			}
-			totalBonus += buff.BaseBonusArmor
-		}
-		return totalBonus
-	}
-	public CalculateBaseBonusArmorAmplifier() {
-		let amp = 1
-		const buffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BaseBonusArmorAmplifier) {
-				continue
-			}
-			if (!buff.BaseBonusArmorAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			amp += buff.BaseBonusArmorAmplifier
-		}
-		return amp
-	}
-	public CalculateArmorBonus() {
-		let totalBonus = 0
-		const buffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BonusArmor) {
-				continue
-			}
-			if (!buff.BonusArmorStack && names.has(buff.Name)) {
-				continue
-			}
-			totalBonus += buff.BonusArmor
-		}
-		return totalBonus
-	}
-	/** ================================ Attack Speed ======================================= */
-	protected CalculateBaseAttackTime() {
-		let attackTime =
-			this.Buffs.find(x => x.FixedBaseAttackTime !== 0)?.FixedBaseAttackTime ??
-			this.BaseAttackTimeData
-		const buffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BonusBaseAttackTime) {
-				continue
-			}
-			if (!buff.BonusBaseAttackTimeStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			attackTime += buff.BonusBaseAttackTime
-		}
-		return attackTime
-	}
-
-	protected CalculateBaseAttackAnimationPoint() {
-		const attackAnimationPoint = this.Buffs.find(
-			x => x.FixedAttackAnimationPoint !== 0
-		)?.FixedAttackAnimationPoint
-		return attackAnimationPoint ?? this.BaseAttackAnimationPointData
-	}
-
-	protected CalculateAttackAnimationPoint() {
-		let attackAnimationPoint = this.CalculateBaseAttackAnimationPoint()
-		const echoSabre = this.GetAbilityByName("item_echo_sabre")
-		if (echoSabre !== undefined && echoSabre.CanBeCasted() && !this.IsRanged) {
-			attackAnimationPoint *= 2.5
-		}
-		return attackAnimationPoint + AttackSpeedData.SpecialAttackDelay
-	}
-
-	public CalculateBaseAttackSpeed() {
-		return (
-			this.TotalAgility +
-			this.BaseAttackSpeedData +
-			this.CalculateBaseAttackSpeedBonus()
-		)
-	}
-
-	public CalculateBaseAttackSpeedBonus() {
-		let totalBonus = 0
-		const buffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BaseBonusAttackSpeed) {
-				continue
-			}
-			if (!buff.BaseBonusAttackSpeedStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			totalBonus += buff.BaseBonusAttackSpeed
-		}
-		return totalBonus
-	}
-
-	public CalculateBaseAttackSpeedAmplifier() {
-		let amp = 1
-		const buffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BaseAttackSpeedAmplifier) {
-				continue
-			}
-			if (!buff.BaseAttackSpeedAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			amp += buff.BaseAttackSpeedAmplifier
-		}
-		return amp
-	}
-
-	public CalculateAttackSpeedBonus() {
-		let totalBonus = 0
-		const buffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BonusAttackSpeed) {
-				continue
-			}
-			if (!buff.BonusAttackSpeedStack && names.has(buff.Name)) {
-				continue
-			}
-			totalBonus += buff.BonusAttackSpeed
-		}
-		return totalBonus
-	}
-
-	public CalculateAttackSpeedAmplifier() {
-		let amp = 1
-		const buffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.AttackSpeedAmplifier) {
-				continue
-			}
-			if (!buff.AttackSpeedAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			amp += buff.AttackSpeedAmplifier
-		}
-		return amp
-	}
-
-	/** ================================ Move Speed ======================================= */
-	protected ShouldCheckMaxSpeed(modifier: Modifier) {
-		const hasBuffByName = this.IsThirst || this.IsCharge
-		return !(hasBuffByName && modifier.BonusMoveSpeed >= MoveSpeedData.Max)
-	}
-
-	protected CalculateFixedMoveSpeed() {
-		return (
-			this.Buffs.toOrderBy(
-				// exclude 0
-				x => x.MoveSpeedFixed === 0,
-				// sort by min
-				x => x.MoveSpeedFixed
-			).find(x => x.MoveSpeedFixed !== 0)?.MoveSpeedFixed ?? 0
-		)
-	}
-
-	protected CalcualteBaseMoveSpeed() {
-		if (this.MoveSpeedFixed !== 0) {
-			return this.MoveSpeedFixed
-		}
-		let baseSpeed = this.NetworkBaseMoveSpeed
-		if (baseSpeed === 0) {
-			baseSpeed = this.MoveSpeedBaseData
-		}
-		let totalBonus = 0,
-			totalBonusAmp = 1
-		const arrBuffs = this.Buffs,
-			namesBonus = new Set<string>(),
-			namesAmplifier = new Set<string>(),
-			bonusBaseSpeed = baseSpeed + totalBonus
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			// if not bonus skip
-			if (buff.MoveSpeedBase !== 0) {
-				if (!buff.MoveSpeedBaseStack && namesBonus.has(buff.Name)) {
-					continue
-				}
-				namesBonus.add(buff.Name)
-				totalBonus += buff.MoveSpeedBase
-				continue
-			}
-			// if not amplifier skip
-			if (!buff.MoveSpeedBaseAmplifier) {
-				continue
-			}
-			if (!buff.MoveSpeedBaseAmplifierStack && namesAmplifier.has(buff.Name)) {
-				continue
-			}
-			namesAmplifier.add(buff.Name)
-			totalBonusAmp += buff.MoveSpeedBaseAmplifier
-		}
-
-		// need check min speed data from base move speed ?
-		return bonusBaseSpeed * totalBonusAmp
-	}
-
-	protected CalculateBonusMoveSpeed() {
-		let totalBonus = 0
-		const names = new Set<string>(),
-			arrBuffs = this.Buffs
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (buff.IsBoots || !buff.BonusMoveSpeed) {
-				continue
-			}
-			if (!this.ShouldCheckMaxSpeed(buff)) {
-				continue
-			}
-			if (!buff.BonusMoveSpeedStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			totalBonus += buff.BonusMoveSpeed
-		}
-		const nightBonus = 0 // TODO: this.CalcualteNightMoveSpeed()
-		return totalBonus + nightBonus + this.MoveSpeedBonusBoots
-	}
-
-	protected CalculateMoveSpeedAmplifier() {
-		let amp = 1
-		const arrBuffs = this.Buffs,
-			names = new Set<string>()
-		// TODO: modifier_muerta_dead_shot_fear
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (buff.IsBoots || !buff.BonusMoveSpeedAmplifier) {
-				continue
-			}
-			if (!buff.BonusMoveSpeedAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			let res = buff.BonusMoveSpeedAmplifier
-			if (buff.IsDebuff) {
-				res *= this.CalcualteResistanceMoveSpeed()
-			}
-			names.add(buff.Name)
-			amp += res
-		}
-		return amp + this.MoveSpeedAmpBoots
-	}
-
-	// TODO: refactor
-	protected CalcualteNightMoveSpeed() {
-		if (!GameRules?.IsNight) {
-			return 0
-		}
-
-		const speed = 30 // fixed value
-		const lastDamageTime = this.LastDamageTime + 5
-		const lastAttackTime = this.LastAttackTime + 5
-		const lastDealtDamageTime = this.LastDealtDamageTime + 5
-
-		const gameRawTime = GameState.RawGameTime
-		if (
-			lastAttackTime > gameRawTime ||
-			(lastDamageTime > gameRawTime && lastDealtDamageTime > gameRawTime)
-		) {
-			return 0
-		}
-
-		return speed
-	}
-
-	protected CalcualteResistanceMoveSpeed() {
-		let res = 1
-		const names = new Set<string>(),
-			arrBuffs = this.Buffs
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.StatusResistanceSpeed) {
-				continue
-			}
-			if (!buff.StatusResistanceSpeedStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			res += buff.StatusResistanceSpeed
-		}
-		return res
-	}
-
-	/** ================================ Attack Range ======================================= */
-
-	protected CalcualteAmpAttackRange() {
-		let amp = 1
-		const names = new Set<string>(),
-			arrBuffs = this.Buffs
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.AttackRangeAmplifier) {
-				continue
-			}
-			if (!buff.AttackRangeAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			amp += buff.AttackRangeAmplifier
-		}
-		return amp
-	}
-
-	protected CalcualteBonusAttackRange() {
-		let totalBonus = 0
-		const names = new Set<string>()
-		const arrBuffs = this.Buffs
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.BonusAttackRange) {
-				continue
-			}
-			if (!buff.BonusAttackRangeStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			totalBonus += buff.BonusAttackRange
-		}
-		return totalBonus
-	}
-
-	protected CalcualteFixedAttackRange() {
-		return this.Buffs.find(x => x.FixedAttackRange !== 0)?.FixedAttackRange ?? 0
-	}
-
-	protected CalcualteInfinityAttackRange() {
-		if (HeightMap === undefined) {
-			return Number.MAX_SAFE_INTEGER
-		}
-		return HeightMap.MapSize.x ** 2 + HeightMap.MapSize.y ** 2
-	}
-
-	/** ================================ AOE Radius ======================================= */
-	protected CalcualteBonusAOERadius() {
-		let totalBonus = 0
-		const buffs = this.Buffs
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BonusAOERadius) {
-				continue
-			}
-			totalBonus += buff.BonusAOERadius
-		}
-		return totalBonus
-	}
-
-	protected CalcualteBonusAOERadiusAmplifier() {
-		let amp = 1
-		const buffs = this.Buffs
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BonusAOERadiusAmplifier) {
-				continue
-			}
-			amp += buff.BonusAOERadiusAmplifier
-		}
-		return amp
-	}
-	/** ================================ Cast Range ======================================= */
-	protected CalcualteAmpCastRange() {
-		let amp = 1
-		const names = new Set<string>()
-		const arrBuffs = this.Buffs
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.CastRangeAmplifier) {
-				continue
-			}
-			if (!buff.CastRangeAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			amp += buff.CastRangeAmplifier
-		}
-		return amp
-	}
-
-	protected CalcualteBonusCastRange() {
-		let totalBonus = 0
-		const names = new Set<string>(),
-			arrBuffs = this.Buffs
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.BonusCastRange) {
-				continue
-			}
-			if (!buff.BonusCastRangeStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			totalBonus += buff.BonusCastRange
-		}
-		return totalBonus
-	}
-
-	/** ================================ Turn Rate ======================================= */
-	protected CalcualteFixedTurnRate() {
-		return this.Buffs.find(x => x.FixedTurnRate !== 0)?.FixedTurnRate ?? 0
-	}
-
-	protected CalcualteFixedBaseTurnRate() {
-		return this.Buffs.find(x => x.FixedBaseTurnRate !== 0)?.FixedBaseTurnRate ?? 0
-	}
-
-	protected CalcualteBaseTurnRate() {
-		const turnRate = this.CalcualteFixedBaseTurnRate()
-		if (turnRate !== 0) {
-			return turnRate
-		}
-		return this.UnitData.MovementTurnRate
-	}
-
-	protected CalcualteBonusTurnRate() {
-		let totalBonus = 0
-		const names = new Set<string>(),
-			arrBuffs = this.Buffs
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.BonusTurnRate) {
-				continue
-			}
-			if (!buff.BonusTurnRateStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			totalBonus += buff.BonusTurnRate
-		}
-		return totalBonus
-	}
-
-	protected CalcualteAmpTurnRate() {
-		let amp = 1
-		const names = new Set<string>(),
-			arrBuffs = this.Buffs
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.BonusTurnRateAmplifier) {
-				continue
-			}
-			if (!buff.BonusTurnRateAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			amp += buff.BonusTurnRateAmplifier
-		}
-		return amp
-	}
-
-	/** ================================ Night Vision ======================================= */
-	protected CalcualteBonusNightVision() {
-		let totalBonus = 0
-		const arrBuffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.BonusNightVision) {
-				continue
-			}
-			if (!buff.BonusNightVisionStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			totalBonus += buff.BonusNightVision
-		}
-		return totalBonus
-	}
-
-	/** ================================ Day Vision ======================================= */
-	protected CalcualteBonusDayVision() {
-		let totalBonus = 0
-		const arrBuffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.BonusDayVision) {
-				continue
-			}
-			if (!buff.BonusDayVisionStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			totalBonus += buff.BonusDayVision
-		}
-		return totalBonus
-	}
-
-	protected CalcualteAmpDayVision() {
-		let totalBonus = 1
-		const arrBuffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.BonusDayVisionAmplifier) {
-				continue
-			}
-			if (!buff.BonusDayVisionAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			totalBonus += buff.BonusDayVisionAmplifier
-		}
-		return totalBonus
-	}
-
-	/** ================================ Status Resist ======================================= */
-	protected CalculateStatusResist() {
-		// maybe valve add new future status resistance
-		// https://dota2.fandom.com/wiki/Status_Resistance
-		const base = this.BaseStatusResistance,
-			amp = this.StatusResistanceAmplifier
-		return 1 - (1 - base) * amp
-	}
-
-	protected CalculateStatusResistAmplifier() {
-		let totalBonus = 1
-		const arrBuffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.StatusResistanceAmplifier) {
-				continue
-			}
-			if (!buff.StatusResistanceAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			totalBonus *= 1 - buff.StatusResistanceAmplifier
-		}
-		return totalBonus
-	}
-
-	/** ================================ Cast point ======================================= */
-	protected CalculateCastPointAmplifier() {
-		let totalBonus = 1
-		const arrBuffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = arrBuffs.length - 1; index > -1; index--) {
-			const buff = arrBuffs[index]
-			if (!buff.BonusCastPointAmplifier) {
-				continue
-			}
-			if (!buff.BonusCastPointAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			totalBonus *= 1 - buff.BonusCastPointAmplifier
-		}
-		return totalBonus
-	}
-
-	/** ================================ Cast point ======================================= */
-	protected CalcualteBonusManaCostAmplifier() {
-		let amp = 1
-		const buffs = this.Buffs,
-			names = new Set<string>()
-		for (let index = buffs.length - 1; index > -1; index--) {
-			const buff = buffs[index]
-			if (!buff.BonusManaCostAmplifier) {
-				continue
-			}
-			if (!buff.BonusManaCostAmplifierStack && names.has(buff.Name)) {
-				continue
-			}
-			names.add(buff.Name)
-			amp += buff.BonusManaCostAmplifier
-		}
-		return amp
-	}
 }
 
 RegisterFieldHandler(Unit, "m_iUnitNameIndex", (unit, newVal) => {
@@ -2628,14 +2010,6 @@ RegisterFieldHandler(Unit, "m_iTaggedAsVisibleByTeam", (unit, newValue) => {
 RegisterFieldHandler(Unit, "m_iPlayerID", (unit, newVal) => {
 	unit.PlayerID = ReencodeProperty(newVal, EPropertyType.INT32) as number
 	PlayerCustomData.set(unit.PlayerID)
-})
-RegisterFieldHandler(Unit, "m_nUnitState64", (unit, newVal) => {
-	const oldValue = unit.UnitStateNetworked
-	if (oldValue !== newVal) {
-		unit.UnitStateNetworked = ReencodeProperty(newVal, EPropertyType.UINT64) as bigint
-		UpdateModifiersByUnitState(unit)
-		EventsSDK.emit("UnitStateChanged", false, unit)
-	}
 })
 RegisterFieldHandler(Unit, "m_hOwnerNPC", (unit, newVal) => {
 	unit.OwnerNPC_ = newVal as number
@@ -2773,5 +2147,10 @@ RegisterFieldHandler(Unit, "m_iCurrentLevel", (unit, newVal) => {
 		EventsSDK.emit("UnitLevelChanged", false, unit)
 	}
 })
-
+RegisterFieldHandler(Unit, "m_flLastDamageTime", (unit, newVal) => {
+	const oldValue = unit.LastDamageTime_
+	if (oldValue !== newVal) {
+		unit.LastDamageTime_ = newVal as number
+	}
+})
 export const Units = EntityManager.GetEntitiesByClass(Unit)

@@ -304,14 +304,6 @@ interface EventsSDK extends EventEmitter {
 		listener: (unit: Unit) => void,
 		priority?: number
 	): EventEmitter
-	/**
-	 * @description Changed UnitStateNetwork
-	 */
-	on(
-		name: "UnitStateChanged",
-		listener: (unit: Unit) => void,
-		priority?: number
-	): EventEmitter
 	on(
 		name: "NetworkActivityChanged",
 		listener: (npc: Unit) => void,
