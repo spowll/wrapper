@@ -8,4 +8,19 @@ console.log("Hello World!");
 
 EventsSDK.on("GameStarted", () => {
   console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
+	console.log("GameStarted");
 });
